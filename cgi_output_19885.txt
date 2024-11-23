@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>Example</title>
+    </head>
+    <body>
+        <h1>CGI TEST</h1>
+        <p>If you're seeing this, that means my code works! YAYAYAYAYAY!!!</p>
+    </body>
+</html>HTTP/1.0 200 OK
+Content-Type: text/html
+Content-Length: 126
+
+<html><body><h1>Error 500</h1><p><h3>Internal error :(</h3><p>Exec failed. cgi_support --> child process</p></p></body></html>
