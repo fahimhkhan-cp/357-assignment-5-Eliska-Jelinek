@@ -80,7 +80,9 @@ void cgi_support2(char *url, FILE *network, char *type) {
         // Child process
         int fd = open(tempFile, O_WRONLY | O_CREAT | O_TRUNC, 0644);
         if (fd == -1) {
-            send_error(fileno(network), "500 Internal Server Error", "<h3>Server Error</h3><p>Failed to open output file for CGI execution.</p>");
+            char printString[512];
+            snprintf(printString, sizeof(printString), "<h3>Server Error</h3><p>Command path: %s\nCommand: %s \n Argv: %s</p>", command_path, command, *argv);
+            send_error(fileno(network), "500 Internal Server Error", printString);
             exit(1);
         }
 
@@ -90,7 +92,7 @@ void cgi_support2(char *url, FILE *network, char *type) {
         close(fd);
 
         // Execute the command
-        execvp(command_path, argv);
+        execvp(command_path, argv); //command_path
 
         // If execvp fails
         fprintf(stderr, "Failed to execute command: %s\n", command_path);
@@ -159,22 +161,21 @@ void cgi_support(char *url, FILE *network, char *type) {
    char *urlCopy = strdup(url); // Make a copy to prevent changing of original input
    char *command = strtok(urlCopy + 8, "?"); // Skip "/cgi-bin/"
    char *allArgs = strtok(NULL, "");
-
+   
 
    // Reconstruct command path
    char command_path[512]; // Arbitrary cap
-   snprintf(command_path, sizeof(command_path), "cgi-bin/%s", command); // "/cgi-bin/%s"
+   snprintf(command_path, sizeof(command_path), "cgi-bin/%s", command);
 
    // Save args to a list of args
    char *argv[256];
    int argc = 0;
-   argv[argc++] = command; // First argument is command name // TODO: changed from command_path, may not be right
-   //argc = argc + strlen(command_path); // argc++;
+   argv[argc++] = command_path; // First argument is command path
+
    if (allArgs) {
       char *arg = strtok(allArgs, "&");
       while (arg && argc < 255) { // cap at 255, not 256 to save space for null terminator
          argv[argc++] = arg;
-         //argc = argc + strlen(arg); // argc++;
          arg = strtok(NULL, "&");
       }
    }
@@ -183,7 +184,6 @@ void cgi_support(char *url, FILE *network, char *type) {
    // Create a unique temp file for output
    char childOutput[256];
    snprintf(childOutput, sizeof(childOutput), "/tmp/cgi_output_%d.txt", getpid()); // Make file name and save to childOutput
-   printf("\nchildOutput file name: %s", childOutput);
 
    // Spawn child process to execute command
    pid_t pid = fork();
@@ -200,7 +200,7 @@ void cgi_support(char *url, FILE *network, char *type) {
       // Open file for writing output
       int fd = open(childOutput, O_WRONLY | O_CREAT | O_TRUNC, 0644); // Used ChatGPT to help me figure out the arguments
       if (fd == -1) {
-         send_error(fileno(network), "Error 500", "<h3>Internal error :(</h3><p>Opening childOutput file in cgi_support child process failed</p>"); // Print to network because fd failed
+         send_error(fileno(network), "Error 500", "<h3>Internal error :(</h3><p><Could not open file for command output./p>"); // Print to network because fd failed
          exit(1);
       }
 
@@ -209,13 +209,110 @@ void cgi_support(char *url, FILE *network, char *type) {
       close(fd); // close later?
 
       // Execute the command
-      execvp(command_path, argv);
+      execvp(command, argv); //execvp(command_path, argv); 
       //printf("Failed to execute command.");
-      send_error(STDOUT_FILENO, "Error 500", "<h3>Internal error :(</h3><p>Exec failed.</p>"); 
       dup2(STDOUT_FILENO, STDOUT_FILENO);
-      exit(1);
-      //
+
       
+
+
+
+      ////////////////////////////////////
+      // Reaching this point means "exec" failed
+      // Try opening html file, if provided.
+      if (strstr(command_path, ".html")) {
+         // Open output file (if it exists)
+         FILE *file = fopen(command_path, "r");
+         if (file == NULL) {
+            send_error(fileno(network), "Error 500", "<h3>Internal error :(</h3><p>File doesn't exist. Parent process cgi support</p>"); 
+            exit(1);
+         }
+
+         // Determine the size of the output
+         fseek(file, 0, SEEK_END);
+         long content_length = ftell(file);
+         rewind(file);
+
+         // Read and send the file content
+         char *content = malloc(content_length + 1);
+         if (content) {
+            fread(content, 1, content_length, file);
+            content[content_length] = '\0';
+            if (!strcmp(type, "GET")) {
+               content[0] = '\0'; // Make it an empty list
+            }
+            send_response(fileno(network), "200 OK", "text/html", content, content_length);
+            free(content);
+         } else {
+            send_error(fileno(network), "500 Internal Server Error", "<h3>Server Error</h3><p>Failed to allocate memory for CGI output.</p>");
+         }
+
+         fclose(file);
+      
+      } else {
+         send_error(fileno(network), "Error 501", "<h3>Not implemented :P</h3><p>Could not execute command or open file.</p>");
+      }
+
+
+         // TODO: The cgi-bin directory name must immediately follow the / in order to be considered valid.
+                    
+      //    // Print reply (write to network)
+      //    struct stat requestStat;
+      //    if (stat(command_path, &requestStat) == 0 && S_ISREG(requestStat.st_mode)) {
+      //       // Open provided file for reading
+      //       FILE *file = fopen(command_path, "r");
+      //       if (file) {
+      //          // TODO: Send_reply
+      //          send_response(filno(network), "200 OK", "text/html", content, content_length);
+      //          if (strcmp(type, "GET") == 0) {
+      //             char buffer[8192];
+      //             size_t bytes;
+      //             while ((bytes = fread(buffer, 1, sizeof(buffer), file)) > 0) {
+      //                printf("-----%s", buffer);
+      //                write(fd, buffer, bytes);
+      //                //fwrite(buffer, 1, bytes, fd); // network --> fd . TODO: maybe write(network, buffer, bytes); instead???
+      //             }
+      //          }
+      //          printf("\n~~~~~After getting reading and writing contents.");
+      //          //send_error(fileno(network), "Child should be writing - done writing to file", "<h3>Why's this not working</h3><p>Used fileno(network) as output</p>");
+      //          // Done with file, close it
+      //          fclose(file);
+      //          printf("\n~~~~~Closed file");
+      //       }
+      //    } else {
+      //       // TODO: nfd --> network --> fd
+      //       printf("\n~~~~~File not found");
+      //       send_error(fd, "Error 404", "<h3>File not found -_-</h3><p>Could not open requested file.</p>");
+      //       exit(1); // TODO: THESE SHOULD GIVING HTML RESPONSES!! See chat response for what each error is. (Internal server error, not found, not implemented)
+      //    }
+      // } else {
+      //    printf("\n~~~~~Not implemented");
+      //    send_error(fd, "Error 501", "<h3>Not implemented :P</h3><p>Could not execute command or open file.</p>");
+      // }
+
+
+      // printf("\n~~~~~Something else went wrong");
+      // // TODO: test this error --> maybe don't need exit statement????
+      // send_error(fd, "Error 500", "<h3>Internal error :(</h3><p>Exec failed. cgi_support --> child process</p>"); 
+      // printf("\n~~~~~Right before exiting cgi support");
+      // exit(1);
+      ////////////////////////////////////
+
+
+
+
+
+
+
+
+
+      // char printString[512];
+      // snprintf(printString, sizeof(printString), "<h3>Internal error :(</h3><p>Command path: %s\nCommand: %s \n Argv: %s</p>", command_path, command, *argv);
+      // send_error(fileno(network), "Error 500", printString); 
+      
+      
+      // exit(1);
+       
       // // TODO: Move the redirection and execution to after the html check?
       // // Redirect output to file
       // // fflush(STDOUT_FILENO);
@@ -297,11 +394,7 @@ void cgi_support(char *url, FILE *network, char *type) {
       int status;
       waitpid(pid, &status, 0);
 
-      // Open file (first, generate its name)
-      // char childOutput[256];
-      // snprintf(childOutput, sizeof(childOutput), "cgi_output_%d.txt", pid); // TODO: maybe add a slash here?
-      // printf("\nchildOutput in parent process: %s", childOutput);
-      // Open file (if it exists)
+      // Open output file (if it exists)
       FILE *file = fopen(childOutput, "r");
       if (file == NULL) {
          send_error(fileno(network), "Error 500", "<h3>Internal error :(</h3><p>File doesn't exist. Parent process cgi support</p>"); 
@@ -328,62 +421,6 @@ void cgi_support(char *url, FILE *network, char *type) {
       fclose(file);
       remove(childOutput); // Remove the temporary file
       free(urlCopy);
-
-
-      // // Read contents from file
-      // // fseek(file, 0, SEEK_END);
-      // // long content_length = ftell(file);
-      // // fseek(file, 0, SEEK_SET);
-      // // TODO: no idea what chat did here
-
-      // // TODO: rewrite using send_reply
-      // // Reply
-      // // fprintf(network, "HTTP/1.0 200 OK\r\n");
-      // // fprintf(network, "Content-Type: text/html\r\n");
-      // // fprintf(network, "Content-Length: %ld\r\n\r\n", content_length);
-      
-      // // Send the file contents
-      // // char buffer[8192]; // Arbitrary amount
-      // // size_t bytes_read;
-      // // while ((bytes_read = fread(buffer, 1, sizeof(buffer), file)) > 0) {
-      // //    fwrite(buffer, 1, bytes_read, network); //TODO: does this need to have "\r\n" at end?
-      // // }
-
-      // ////////////////////// FROM INTERNET
-      // char *content;
-      // long content_length;
-
-      // // Get the file size
-      // fseek(file, 0L, SEEK_END);
-      // content_length = ftell(file);
-      // rewind(file);
-
-      // // Allocate memory for the buffer
-      // content = (char *)malloc(content_length + 1);
-      // if (content == NULL) {
-      //    send_error(fileno(network), "Error 500", "<h3>Internal error :(</h3><p>Content malloc</p>"); 
-      //    fclose(file);
-      //    exit(1);
-      // }
-
-      // // Read the entire file into the buffer
-      // fread(content, 1, content_length, file);
-      // fclose(file);
-
-      // // Add a null terminator at the end
-      // content[content_length] = '\0';
-      // ///////////////////////////
-
-      // char testString[4096]; // Arbitrary cap
-      // snprintf(testString, sizeof(testString), "<h3>Inside parent process in cgi support.</h3><p>Content length: %d\nContent: %s</p>",content_length, content);
-      // send_error(fileno(network), "Testing", testString); 
-      // //send_error(fileno(network), "TESTING", "<h3>Inside parent process in cgi support</h3>"); 
-      // send_response(fileno(network), "OK", "text/html", content, content_length);
-
-      // // Close and remove file
-      // fclose(file);
-      // // TODO: uncomment below line
-      // //remove(childOutput); // Deleting file: https://www.tutorialspoint.com/c_standard_library/c_function_remove.htm
    }
 }
 
